@@ -1,0 +1,66 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: ssl-client-auth-filter
+spec:
+  workloadSelector:
+    labels:
+      istio: ingressgateway
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          tlsContext:
+            commonTlsContext:
+              tlsParams:
+                tlsMinimumProtocolVersion: TLSv1_2
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.mtls
+        config:
+          mode: ISTIO_MUTUAL
+          validationContext:
+            trustedCa: {filename: "/etc/istio/ingressgateway-certs/ca.crt"}
+            verifyCertificateSpki:
+            - "hash_of_valid_client_certificate_spki"
+          requireClientCertificate: true
+        typed_config:
+          "@type": type.googleapis.com/envoy.config.filter.http.mtls.v2alpha.MutualTls
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.lua
+        config:
+          inlineCode: |
+            function envoy_on_request(request_handle)
+              local headers = request_handle:headers()
+              local ssl_client_cert = headers:get("x-forwarded-client-cert")
+              if ssl_client_cert == nil then
+                request_handle:respond({[":status"] = "400"}, "No client certificate provided\n")
+              else
+                local openssl = require "openssl"
+                local cert = openssl.x509.new(ssl_client_cert)
+                local cert_subject = cert:subject()
+                local cn = cert_subject:find("CN")
+                if cn == nil then
+                  request_handle:respond({[":status"] = "400"}, "No common name in client certificate\n")
+                else
+                  local common_name = cn[1].value
+                  if common_name ~= "expected_common_name" then
+                    request_handle:respond({[":status"] = "403"}, "Invalid client certificate\n")
+                  end
+                end
+              end
+            end
+        typed_config:
+          "@type": type.googleapis.com/envoy.config.filter.http.lua.v2.Lua
