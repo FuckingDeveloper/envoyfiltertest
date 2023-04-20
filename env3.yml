@@ -1,0 +1,33 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: custom-error-page
+  namespace: istio-system
+spec:
+  workloadLabels:
+    istio: ingressgateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "envoy.filters.http.router"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.lua
+          typed_config:
+            "@type": "type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua"
+            inlineCode: |
+              function envoy_on_response(response_handle)
+                if response_handle:headers():get(":status") == "400" and response_handle:headers():get("x-envoy-peer-metadata") == "CERTIFICATE_AUTHORITY" then
+                  local custom_response_body = "<html><body><h1>Bad SSL client authentication certificate</h1></body></html>"
+                  response_handle:headers():replace("content-type", "text/html")
+                  response_handle:headers():replace("content-length", string.len(custom_response_body))
+                  response_handle:send_response(custom_response_body)
+                end
+              end
