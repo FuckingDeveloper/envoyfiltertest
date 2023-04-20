@@ -1,0 +1,52 @@
+  configPatches:
+    - applyTo: NETWORK_FILTER # применить патч к сетевому фильтру
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "envoy.filters.http.router"
+        proxy:
+          proxyVersion: "2.0.11"
+      patch:
+        operation: INSERT_BEFORE # вставить перед выбранным фильтром
+        value:
+          name: envoy.lua
+          config:
+            inlineCode: |
+              function envoy_on_request(request_handle)
+                -- check if request matches the specific domain
+                if request_handle:headers():get(":authority") ~= "your-specific-domain.com" then
+                  return
+                end
+
+                if request_handle:connection():ssl():peerCertificatePresented() == false then
+                  request_handle:respond(
+                    { 
+                      [":status"] = "400",
+                      ["content-type"] = "text/plain",
+                    },
+                    "Bad client authentication certificate\n"
+                  )
+                  return
+                elseif request_handle:connection():ssl():peerCertificate():validityRemaining() < 0 then
+                  request_handle:respond(
+                    { 
+                      [":status"] = "496",
+                      ["content-type"] = "text/plain",
+                    },
+                    "Expired client authentication certificate\n"
+                  )
+                  return
+                end
+
+                -- forward request to the local service in the same namespace
+                request_handle:headers():add("x-envoy-upstream-service-timeout", "5s")
+                request_handle:headers():add("x-envoy-upstream-rq-per-try-timeout", "5s")
+                request_handle:headers():add("x-envoy-max-retries", "1")
+                request_handle:headers():add("x-envoy-retry-grpc-on", "cancelled")
+                request_handle:headers():replace("host", "your-local-service-name.<your-namespace>.svc.cluster.local")
+                request_handle:route():clearRouteCache()
+              end
