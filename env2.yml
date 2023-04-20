@@ -12,28 +12,6 @@ spec:
       context: GATEWAY
       listener:
         filterChain:
-          tlsContext:
-            commonTlsContext:
-              tlsParams:
-                tlsMinimumProtocolVersion: TLSv1_2
-    patch:
-      operation: INSERT_BEFORE
-      value:
-        name: envoy.filters.http.mtls
-        config:
-          mode: ISTIO_MUTUAL
-          validationContext:
-            trustedCa: {filename: "/etc/istio/ingressgateway-certs/ca.crt"}
-            verifyCertificateSpki:
-            - "hash_of_valid_client_certificate_spki"
-          requireClientCertificate: true
-        typed_config:
-          "@type": type.googleapis.com/envoy.config.filter.http.mtls.v2alpha.MutualTls
-  - applyTo: HTTP_FILTER
-    match:
-      context: GATEWAY
-      listener:
-        filterChain:
           filter:
             name: envoy.filters.network.http_connection_manager
     patch:
@@ -46,7 +24,11 @@ spec:
               local headers = request_handle:headers()
               local ssl_client_cert = headers:get("x-forwarded-client-cert")
               if ssl_client_cert == nil then
-                request_handle:respond({[":status"] = "400"}, "No client certificate provided\n")
+                local authority = headers:get(":authority")
+                request_handle:respond(
+                  {[":status"] = "403", ["www-authenticate"] = "MutualTLS", ["server"] = authority},
+                  "Mutual TLS authentication required\n"
+                )
               else
                 local openssl = require "openssl"
                 local cert = openssl.x509.new(ssl_client_cert)
