@@ -1,9 +1,62 @@
-apiVersion: networking.istio.io/v1beta1
-kind: DestinationRule
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
 metadata:
-  name: egress-gateway
+  name: rate-limiter
+  namespace: your-namespace
 spec:
-  host: egress-gateway.istio-system.svc.cluster.local
-  trafficPolicy:
-    tls:
-      mode: ISTIO_MUTUAL
+  workloadSelector:
+    labels:
+      app: your-app
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: SIDECAR_INBOUND
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "envoy.filters.http.router"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: envoy.filters.http.lua
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            inlineCode: |
+              -- Импортируем библиотеку для работы с Envoy
+              local envoy = require "envoy"
+
+              -- Настраиваем лимит
+              local RATE_LIMIT = 10 -- Максимальное количество запросов в секунду
+              local TIME_WINDOW = 1 -- Окно времени в секундах
+
+              -- Переменные для хранения счетчика запросов и времени начала окна
+              local request_count = 0
+              local window_start_time = os.time()
+
+              -- Функция для обработки каждого входящего запроса
+              function envoy_on_request(request_handle)
+                  local current_time = os.time()
+                  
+                  -- Проверяем, если текущее окно времени закончилось
+                  if current_time - window_start_time >= TIME_WINDOW then
+                      window_start_time = current_time
+                      request_count = 0
+                  end
+
+                  -- Увеличиваем счетчик запросов
+                  request_count = request_count + 1
+
+                  -- Проверяем, превышен ли лимит
+                  if request_count > RATE_LIMIT then
+                      -- Отклоняем запрос с кодом состояния 429 (Too Many Requests)
+                      request_handle:respond(
+                          { [":status"] = "429" },
+                          "Rate limit exceeded. Please try again later."
+                      )
+                  else
+                      -- Продолжаем обработку запроса
+                      request_handle:continue()
+                  end
+              end
